@@ -21,6 +21,7 @@ namespace lite {
 namespace mir {
 namespace fusion {
 
+#if 0
 void ConvBNFuser::BuildPattern() {
   auto* conv_input =
       VarNode("conv_input")->assert_is_op_input(conv_type_, "Input")->AsInput();
@@ -154,6 +155,122 @@ cpp::OpDesc ConvBNFuser::GenOpDesc(const key2nodes_t& matched) {
   op_desc.SetInput("Y", {matched.at("bn_bias")->arg()->name});
   op_desc.SetOutput("Out", {matched.at("bn_out")->arg()->name});
   op_desc.SetAttr("axis", 1);
+  return op_desc;
+}
+#endif
+
+void ConvBNFuser::BuildPattern() {
+  // Create op
+  auto* conv =
+      OpNode("conv2d", conv_type_)->assert_is_op(conv_type_)->AsIntermediate();
+  auto* bn =
+      OpNode("bn", "batch_norm")->assert_is_op("batch_norm")->AsIntermediate();
+
+  // Create input
+  auto* conv_input =
+      VarNode("conv_input")->assert_is_op_input(conv_type_, "Input")->AsInput();
+  auto* conv_weight = VarNode("conv_weight")
+                          ->assert_is_op_input(conv_type_, "Filter")
+                          ->AsInput();
+#if 0
+  auto* bn_bias =
+      VarNode("bn_bias")->assert_is_op_input("batch_norm", "Bias")->AsInput();
+#else
+  auto* bn_bias = VarNode("bn_bias")
+                      ->assert_is_op_input("batch_norm", "Bias")
+                      ->AsIntermediate();
+#endif
+
+  // Create intermediate
+  auto* bn_mean_out = VarNode("bn_mean_out")
+                          ->assert_is_op_output("batch_norm", "MeanOut")
+                          ->AsIntermediate();
+  auto* bn_var_out = VarNode("bn_var_out")
+                         ->assert_is_op_output("batch_norm", "VarianceOut")
+                         ->AsIntermediate();
+  auto* bn_saved_mean = VarNode("bn_saved_mean")
+                            ->assert_is_op_output("batch_norm", "SavedMean")
+                            ->AsIntermediate();
+  auto* bn_saved_var = VarNode("bn_saved_var")
+                           ->assert_is_op_output("batch_norm", "SavedVariance")
+                           ->AsIntermediate();
+  auto* bn_scale = VarNode("bn_scale")
+                       ->assert_is_op_input("batch_norm", "Scale")
+                       ->AsIntermediate();
+  auto* bn_mean = VarNode("bn_mean")
+                      ->assert_is_op_input("batch_norm", "Mean")
+                      ->AsIntermediate();
+  auto* bn_var = VarNode("bn_variance")
+                     ->assert_is_op_input("batch_norm", "Variance")
+                     ->AsIntermediate();
+
+  // Create output
+  auto* conv_out = VarNode("conv_out")
+                       ->assert_is_op_output(conv_type_, "Output")
+                       ->assert_is_op_input("batch_norm", "X")
+                       ->AsIntermediate();
+  auto* bn_out =
+      VarNode("bn_out")->assert_is_op_output("batch_norm", "Y")->AsOutput();
+
+#if 1
+  auto* conv_bias =
+      VarNode("conv_bias")->assert_is_op_input(conv_type_, "Bias")->AsInput();
+  conv->LinksFrom({conv_input, conv_weight, conv_bias}).LinksTo({conv_out});
+#else
+  conv->LinksFrom({conv_input, conv_weight}).LinksTo({conv_out});
+#endif
+  bn->LinksFrom({conv_out, bn_scale, bn_bias, bn_mean, bn_var})
+      .LinksTo({bn_out, bn_mean_out, bn_saved_mean, bn_saved_var, bn_var_out});
+}
+
+// ConvAct
+void ConvBNFuser::InsertNewNode(SSAGraph* graph, const key2nodes_t& matched) {
+#if 1
+  auto op_desc = GenOpDesc(matched);
+  auto conv_op = LiteOpRegistry::Global().Create(conv_type_);
+  auto conv_old = matched.at("conv2d")->stmt()->op();
+  auto* scope = conv_old->scope();
+  auto& valid_places = conv_old->valid_places();
+  conv_op->Attach(op_desc, scope);
+
+  auto* new_op_node = graph->GraphCreateInstructNode(conv_op, valid_places);
+
+  IR_NODE_LINK_TO(matched.at("conv_input"), new_op_node);
+  IR_NODE_LINK_TO(matched.at("conv_weight"), new_op_node);
+  IR_NODE_LINK_TO(matched.at("conv_bias"), new_op_node);
+  IR_NODE_LINK_TO(new_op_node, matched.at("bn_out"));
+#else
+  auto* desc = matched.at("conv2d")->stmt()->op_info();
+  // desc->SetOutput("Output", {matched.at("bn_out")->arg()->name});
+  auto* conv_old_node = matched.at("conv2d");
+  IR_NODE_LINK_TO(conv_old_node, matched.at("bn_out"));
+#endif
+  VLOG(3) << "finished insert";
+}
+
+// ConvAct
+cpp::OpDesc ConvBNFuser::GenOpDesc(const key2nodes_t& matched) {
+  auto* desc = matched.at("conv2d")->stmt()->op_info();
+  cpp::OpDesc op_desc = *desc;
+  op_desc.SetType(conv_type_);
+  op_desc.SetInput("Input", {matched.at("conv_input")->arg()->name});
+  op_desc.SetInput("Filter", {matched.at("conv_weight")->arg()->name});
+  op_desc.SetInput("Bias", {matched.at("conv_bias")->arg()->name});
+  op_desc.SetOutput("Output", {matched.at("bn_out")->arg()->name});
+
+  // Other inputs. See operators/conv_op.h
+  std::vector<std::string> input_arg_names = desc->InputArgumentNames();
+
+  if (std::find(input_arg_names.begin(),
+                input_arg_names.end(),
+                "ResidualData") != input_arg_names.end()) {
+    op_desc.SetInput("ResidualData", desc->Input("ResidualData"));
+  }
+  // Only consider strides, padding, groups, dilations, fuse_relu for now
+  op_desc.SetAttr("strides", desc->GetAttr<std::vector<int>>("strides"));
+  op_desc.SetAttr("paddings", desc->GetAttr<std::vector<int>>("paddings"));
+  op_desc.SetAttr("groups", desc->GetAttr<int>("groups"));
+  op_desc.SetAttr("dilations", desc->GetAttr<std::vector<int>>("dilations"));
   return op_desc;
 }
 

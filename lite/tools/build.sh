@@ -9,7 +9,7 @@ readonly CMAKE_COMMON_OPTIONS="-DWITH_GPU=OFF \
                                -DLITE_WITH_ARM=ON \
                                -DLITE_WITH_LIGHT_WEIGHT_FRAMEWORK=ON"
 
-readonly NUM_PROC=${LITE_BUILD_THREADS:-4}
+readonly NUM_PROC=1 #${LITE_BUILD_THREADS:-4}
 
 
 # global variables
@@ -128,7 +128,7 @@ function make_all_tests {
   build_dir=$cur_dir/build.lite.${os}.${abi}.${lang}
   if [ -d $build_dir ]
   then
-    rm -rf $build_dir
+    echo #echo "do not rm -rf";#rm -rf $build_dir
   fi
   mkdir -p $build_dir
   cd $build_dir
@@ -137,10 +137,13 @@ function make_all_tests {
   cmake .. \
       ${CMAKE_COMMON_OPTIONS} \
       -DWITH_TESTING=ON \
+      -DLITE_WITH_PROFILE=OFF \
+      -DLITE_SHUTDOWN_LOG=ON \
       -DLITE_BUILD_EXTRA=$BUILD_EXTRA \
       -DARM_TARGET_OS=${os} -DARM_TARGET_ARCH_ABI=${abi} -DARM_TARGET_LANG=${lang}
 
-  make lite_compile_deps -j4
+  #make lite_compile_deps -j1
+  make test_mobilenetv1_int8 -j1
   cd - > /dev/null
 }
 
