@@ -14,6 +14,7 @@
 
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
+#include <unistd.h>
 #include <vector>
 #include "lite/api/cxx_api.h"
 #include "lite/api/paddle_use_kernels.h"
@@ -45,25 +46,47 @@ void TestModel(const std::vector<Place>& valid_places,
     predictor.Run();
   }
 
-  auto start = GetCurrentUS();
-  for (int i = 0; i < FLAGS_repeats; ++i) {
-    predictor.Run();
+  for (auto sleep_time : {100,
+                          200,
+                          500,
+                          1000,
+                          1500,
+                          2000,
+                          5000,
+                          6000,
+                          8000,
+                          10000,
+                          12000,
+                          15000,
+                          20000,
+                          25000,
+                          30000}) {
+    size_t sum = 0;
+    for (int i = 0; i < FLAGS_repeats; ++i) {
+      auto start = GetCurrentUS();
+      predictor.Run();
+      auto end = GetCurrentUS();
+      sum += end - start;
+      usleep(sleep_time);
+    }
+
+    LOG(INFO) << "================== Speed Report ===================";
+    LOG(INFO) << "Model: " << FLAGS_model_dir << ", threads num "
+              << FLAGS_threads << ", warmup: " << FLAGS_warmup
+              << ", repeats: " << FLAGS_repeats
+              << ", sleep_time: " << sleep_time << ", spend "
+              << (/*end - start*/ sum) / FLAGS_repeats / 1000.0
+              << " ms in average.";
+
+    std::cout << "================== Speed Report ==================="
+              << std::endl;
+    std::cout << "Model: " << FLAGS_model_dir << ", threads num "
+              << FLAGS_threads << ", warmup: " << FLAGS_warmup
+              << ", repeats: " << FLAGS_repeats
+              << ", sleep_time: " << sleep_time << ", spend "
+              << (/*end - start*/ sum) / FLAGS_repeats / 1000.0
+              << " ms in average." << std::endl;
   }
-  auto end = GetCurrentUS();
-
-  LOG(INFO) << "================== Speed Report ===================";
-  LOG(INFO) << "Model: " << FLAGS_model_dir << ", threads num " << FLAGS_threads
-            << ", warmup: " << FLAGS_warmup << ", repeats: " << FLAGS_repeats
-            << ", spend " << (end - start) / FLAGS_repeats / 1000.0
-            << " ms in average.";
-
-  std::cout << "================== Speed Report ==================="
-            << std::endl;
-  std::cout << "Model: " << FLAGS_model_dir << ", threads num " << FLAGS_threads
-            << ", warmup: " << FLAGS_warmup << ", repeats: " << FLAGS_repeats
-            << ", spend " << (end - start) / FLAGS_repeats / 1000.0
-            << " ms in average." << std::endl;
-
   std::vector<std::vector<float>> results;
   // i = 1
   results.emplace_back(std::vector<float>(
