@@ -46,7 +46,8 @@ void TestModel(const std::vector<Place>& valid_places,
     predictor.Run();
   }
 
-  for (auto sleep_time : {100,
+  for (auto sleep_time : {0,
+                          100,
                           200,
                           500,
                           1000,
