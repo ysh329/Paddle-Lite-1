@@ -34,6 +34,8 @@ void TypeLayoutTransformPass::Apply(const std::unique_ptr<SSAGraph>& graph) {
     nodes.push_back(&node);
   }
 
+  // 遍历graph中的类型为Stmt的node, 并取出其每1个输入(inlinks中的每个节点)并依次调用ComplementInputs
+  // 补充: node有2种类型：arg表示参数如kernel的输入输出, stmt表示kernel
   LOG(INFO) << "nodes.size():" << nodes.size();
   for (auto& node : nodes) {
     LOG(INFO) << "!node->IsStmt():" << !node->IsStmt();
@@ -48,6 +50,9 @@ void TypeLayoutTransformPass::Apply(const std::unique_ptr<SSAGraph>& graph) {
   VLOG(4) << "\n" << Visualize(graph.get());
 }
 
+// SSAGraph* graph: 模型的图
+// Node* inst_node: stmt类型的node(即kernel)
+// Node* in: 该stmt类型的node的其中一个输入(inlinks中的一个元素)
 void TypeLayoutTransformPass::ComplementInputs(SSAGraph* graph,
                                                Node* inst_node,
                                                Node* in) {
@@ -61,6 +66,12 @@ void TypeLayoutTransformPass::ComplementInputs(SSAGraph* graph,
   LOG(INFO) << "found Target tensor: " << in->AsArg().name;
   CHECK(in->IsRoleSet());
   CHECK(in->IsArg());
+  
+  // 根据in的arg名字, 取出stmt(即kernel, 同名kernel的选择在static_pick_kernel这个pass中完成)中, 
+  //     以该名字为输入的Tensor所声明的类型信息(decl_arg_type)
+  // 检查in的type(包含target/layout/precision/device)中的layout, 与Tensor声明的类型信息中的layout,
+  //     若不一致(!DataLayoutCompatible), 
+  //     则在该Tensor与该kernel(即stmt)中间插入Layout(即调用AddLayoutInst)
   auto in_arg_name = in->AsArg().name;
   std::string tmp;
   CHECK(inst.op_info()->GetInputArgname(in_arg_name, &tmp));
