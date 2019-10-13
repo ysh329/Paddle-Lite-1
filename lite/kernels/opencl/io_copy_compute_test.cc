@@ -15,9 +15,9 @@
 #include <gtest/gtest.h>
 #include <iterator>
 #include <random>
+#include "lite/backends/opencl/target_wrapper.h"
 #include "lite/core/op_registry.h"
 #include "lite/core/tensor.h"
-#include "lite/opencl/target_wrapper.h"
 
 namespace paddle {
 namespace lite {
@@ -79,5 +79,5 @@ TEST(io_copy, compute) {
 }  // namespace lite
 }  // namespace paddle
 
-USE_LITE_KERNEL(io_copy, kOpenCL, kAny, kAny, host_to_device);
-USE_LITE_KERNEL(io_copy, kOpenCL, kAny, kAny, device_to_host);
+USE_LITE_KERNEL(io_copy, kOpenCL, kFloat, kNCHW, host_to_device);
+USE_LITE_KERNEL(io_copy, kOpenCL, kFloat, kNCHW, device_to_host);

@@ -18,6 +18,7 @@
 #include <vector>
 #include "lite/core/mir/generate_program_pass.h"
 #include "lite/core/mir/pass_manager.h"
+#include "lite/core/mir/pass_utils.h"
 #include "lite/core/mir/ssa_graph.h"
 #include "lite/core/mir/static_kernel_pick_pass.h"
 #include "lite/core/mir/type_target_cast_pass.h"
@@ -54,31 +55,41 @@ class Optimizer {
 
     if (passes.empty()) {
       RunPasses(std::vector<std::string>{
-          {"lite_quant_dequant_fuse_pass",  //
-           "lite_conv_bn_fuse_pass",        //
+          {"lite_quant_dequant_fuse_pass",     //
+           "lite_conv_elementwise_fuse_pass",  // conv-elemwise-bn
+           "lite_conv_bn_fuse_pass",           //
+           "lite_conv_elementwise_fuse_pass",  // conv-bn-elemwise
            // This pass is disabled to force some opencl kernels selected for
            // final running, otherwise, they will be fused to ARM fusion
            // kernels, and the OpenCL devices will be discarded.
            // TODO(Superjomn) Refine the fusion related design to select fusion
            // kernels for devices automatically.
-           "lite_conv_elementwise_fuse_pass",             //
            "lite_conv_activation_fuse_pass",              //
            "lite_fc_fuse_pass",                           //
            "lite_shuffle_channel_fuse_pass",              //
            "lite_transpose_softmax_transpose_fuse_pass",  //
+           "lite_interpolate_fuse_pass",                  //
            "identity_scale_eliminate_pass",               //
 #ifdef LITE_WITH_LIGHT_WEIGHT_FRAMEWORK
            "lite_elementwise_add_activation_fuse_pass",  //
 #endif
-           "static_kernel_pick_pass",        //
+           "static_kernel_pick_pass",        // pick original kernel from graph
+           "variable_place_inference_pass",  // inference arg/var's
+           // info(target/precision/layout/device)
+           // using kernel info
+           "argument_type_display_pass",  // debug pass: show arg-type-node's
+                                          // info
+                                          // (target/precision/layout/device)
+
+           "type_target_cast_pass",  // add io_copy/io_copy_once if meet
+                                     // different targets when last and next
+                                     // node
            "variable_place_inference_pass",  //
            "argument_type_display_pass",     //
 
-           "type_target_cast_pass",          //
-           "variable_place_inference_pass",  //
-           "argument_type_display_pass",     //
+           "io_copy_kernel_pick_pass",    //
+           "argument_type_display_pass",  //
 
-           "io_copy_kernel_pick_pass",       //
            "variable_place_inference_pass",  //
            "argument_type_display_pass",     //
 
@@ -86,12 +97,20 @@ class Optimizer {
            "variable_place_inference_pass",  //
            "argument_type_display_pass",     //
 
-           "type_layout_cast_pass",          //
+           "type_layout_cast_pass",  // add layout/layout_once op if meet
+                                     // different layout when last and next node
+           "argument_type_display_pass",  //
+
            "variable_place_inference_pass",  //
            "argument_type_display_pass",     //
 
            "runtime_context_assign_pass",
-           "graph_visualze"}});
+           "argument_type_display_pass",  //
+#ifndef LITE_WITH_OPENCL
+           // TODO(ysh329): cause CL_INVALID_MEM_OBJECT when setArg in kernel
+           "memory_optimize_pass",
+#endif
+           "argument_type_display_pass"}});
     } else {
       RunPasses(passes);
     }
@@ -109,6 +128,26 @@ class Optimizer {
 
   // Generate a new program based on the mir graph.
   std::unique_ptr<RuntimeProgram> GenRuntimeProgram() {
+#ifdef LITE_WITH_NPU
+    if (std::find(valid_places_.begin(),
+                  valid_places_.end(),
+                  Place{TARGET(kNPU), PRECISION(kFloat)}) !=
+        valid_places_.end()) {
+      CheckInputDimsNotEmpty(exec_scope_);
+      auto pass = mir::PassManager::Global()
+                      .LookUp<mir::subgraph::GenerateNPUProgramPass>(
+                          "generate_npu_program_pass");
+      try {
+        pass->Apply(graph_);
+        auto program = pass->GenProgram();
+        CHECK(exec_scope_);
+        program->set_exec_scope(exec_scope_);
+        return program;
+      } catch (...) {
+        LOG(WARNING) << "Build NPU graph failed";
+      }
+    }
+#endif
     auto pass = mir::PassManager::Global().LookUp<mir::GenerateProgramPass>(
         "generate_program_pass");
     pass->Apply(graph_);
@@ -129,24 +168,6 @@ class Optimizer {
       CHECK(!feed_tensor_list->at(i).dims().empty())
           << "Input " << i << " dims can not be empty.";
     }
-  }
-
-  std::unique_ptr<RuntimeProgram> GenNPURuntimeProgram() {
-#ifdef LITE_WITH_NPU
-    CheckInputDimsNotEmpty(exec_scope_);
-    auto pass = mir::PassManager::Global()
-                    .LookUp<mir::subgraph::GenerateNPUProgramPass>(
-                        "generate_npu_program_pass");
-    pass->Apply(graph_);
-
-    auto program = pass->GenProgram();
-    CHECK(exec_scope_);
-    program->set_exec_scope(exec_scope_);
-    return program;
-#else
-    LOG(WARNING) << "Not compiled with NPU but use it!";
-    return GenRuntimeProgram();
-#endif
   }
 
   void InitTargetTypeTransformPass() {
@@ -179,11 +200,22 @@ class Optimizer {
   // Specify the passes and run them.
   void RunPasses(const std::vector<std::string>& passes) {
     for (auto& x : passes) {
-      LOG(INFO) << "== Running pass " << x;
-      auto* pass = mir::PassManager::Global().LookUp(x);
+      LOG(INFO) << "== Running pass: " << x;
+      mir::Pass* pass = mir::PassManager::Global().LookUp(x);
       CHECK(pass) << "Can not find pass: " << x;
-      pass->Apply(graph_);
-      LOG(INFO) << "== Running pass Done." << x;
+      bool matched = false;
+      for (const auto& place : valid_places_) {
+        if (PassMatchesTarget(*pass, place.target)) {
+          matched = true;
+        }
+      }
+      matched = matched && PassMatchesKernels(*pass);
+      if (!matched) {
+        LOG(INFO) << "   - Skip " << x << " because the target does not match.";
+      } else {
+        pass->Apply(graph_);
+        LOG(INFO) << "== Finished running: " << x;
+      }
     }
   }
 
