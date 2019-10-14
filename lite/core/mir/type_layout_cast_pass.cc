@@ -72,6 +72,7 @@ void TypeLayoutTransformPass::ComplementInputs(SSAGraph* graph,
   // 检查in的type(包含target/layout/precision/device)中的layout, 与Tensor声明的类型信息中的layout,
   //     若不一致(!DataLayoutCompatible), 
   //     则在该Tensor与该kernel(即stmt)中间插入Layout(即调用AddLayoutInst)
+  // ??是否可以说: in是上一kernel的输出, decl_arg是当前kernel的输入
   auto in_arg_name = in->AsArg().name;
   std::string tmp;
   CHECK(inst.op_info()->GetInputArgname(in_arg_name, &tmp));
@@ -95,6 +96,14 @@ void TypeLayoutTransformPass::ComplementInputs(SSAGraph* graph,
   }
 }
 
+// const Type& from: stmt的inlinks的1个(上一个函数中的in)的type信息(包含target/layout/precison/device)
+// const Type& to: 根据from(上一函数中的in)的arg name, 在stmt中找的声明的Tensor的type
+// Node* in: 上一个函数中的in, 跟前两个参数(from, to)都有关系：
+//           from -> in的AsArg().type
+//           to -> 根据in AsArg().name 在stmt中inst.picked_kernel().GetInputDeclType
+// SSAGraph* graph: 同上一个函数
+// Node* inst_node: 同上一个函数
+// const std::vector<Place>& valid_places: graph->valid_places()
 void TypeLayoutTransformPass::AddLayoutInst(
     const Type& from,
     const Type& to,
@@ -102,9 +111,13 @@ void TypeLayoutTransformPass::AddLayoutInst(
     SSAGraph* graph,
     Node* inst_node,
     const std::vector<Place>& valid_places) {
-  CHECK(!valid_places.empty()) << "valid_place should be set";
 
+  CHECK(!valid_places.empty()) << "valid_place should be set";
   CHECK(in->IsArg());
+
+  // 创建layout inst node(后面创建)所对应的output node, 即Arg node
+  //     其output的name参数的确定基于: in->AsArg().name.c_str(), node_id()
+  //     其output的type参数的确定基于: from.target(), from.precision(), to.layout()
   auto node_id = [&] { return graph->nodes().size(); };
   auto layout_output_name =
       string_format("%s/layout_trans/%d", in->AsArg().name.c_str(), node_id());
@@ -112,18 +125,23 @@ void TypeLayoutTransformPass::AddLayoutInst(
   layout_output_arg->AsArg().type =
       LiteType::GetTensorTy(from.target(), from.precision(), to.layout());
 
+  // 创建layout的inst node
+  //     layout_type(layout|layout_once)基于: in->AsArg().is_weight || in->AsArg().is_persist
+  //                                          该参数用于layout_op和layout_inst
   auto* layout_inst = graph->NewInstructNode();
-
   bool in_persist = in->AsArg().is_weight || in->AsArg().is_persist;
   std::string layout_type = in_persist ? "layout_once" : "layout";
-  // create Op and kernels.
+
+  // 基于layout_type创建layout_op
   auto layout_op = LiteOpRegistry::Global().Create(layout_type);
   CHECK(layout_op) << "create op [" << layout_op << "] failed";
   layout_output_arg->AsArg().is_persist = in_persist;
-  // Create the new var manually.
+
+  // 基于layout_output_name手动创建var, 并填入inst_node对应op中的scope, 作为一个var
+  //     即layout的output的var
   inst_node->AsStmt().op()->scope()->Var(layout_output_name);
 
-  // Create IoCopy Instruction.
+  // Create Layout Instruction.
   cpp::OpDesc op_desc;
   op_desc.SetType(layout_type);
   op_desc.SetInput("Input", {in->AsArg().name});
@@ -136,7 +154,6 @@ void TypeLayoutTransformPass::AddLayoutInst(
   for (auto& kernel : kernels) {
     const Type* in_arg_ty = kernel->GetInputDeclType("Input");
     const Type* out_arg_ty = kernel->GetOutputDeclType("Out");
-// const Type* out_arg_ty = kernel->GetOutputDeclType("Out"); // unused variable
 #ifdef LITE_WITH_OPENCL
     // ignore [layout check] for layout trans from image2d to buffer
     if (TargetCompatibleTo(*in_arg_ty, from) &&
