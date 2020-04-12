@@ -35,6 +35,10 @@ namespace profile {
 
 template <typename dtype>
 static bool write_tensorfile(const Tensor* tensor, const std::string& locate) {
+  // Note(ysh329): Write path for Android.
+  //  No write permission on Android device for path `/data/local/tmp`,
+  //  you can write to paths, such as `/storage/sdcard0/` or
+  //  `/storage/emulated/0/` if existed.
   if (locate.find('/') != std::string::npos) {
     return false;
   }
